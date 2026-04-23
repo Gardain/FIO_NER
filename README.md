@@ -54,7 +54,7 @@ pprint(result.fio)
 
 ## BERT NER
 
-По умолчанию используется `Gherman/bert-base-NER-Russian`. Это token-classification модель для русского NER с person-метками `LAST_NAME`, `FIRST_NAME`, `MIDDLE_NAME`, поэтому она лучше подходит для СТС, чем QA.
+По умолчанию используется `Gherman/bert-base-NER-Russian`. Это token-classification модель для русского NER с person-метками `LAST_NAME`, `FIRST_NAME`, `MIDDLE_NAME`.
 
 ```python
 from src.sts_fio_mvp import extract_fio_from_image
@@ -71,27 +71,15 @@ result = extract_fio_from_image("data/test3.png")
 И затем использовать его так:
 
 ```python
-from src.sts_fio_mvp import ExtractorMode, extract_fio_from_image
+from src.sts_fio_mvp import extract_fio_from_image
 
 result = extract_fio_from_image(
     "data/test3.png",
-    extractor_mode=ExtractorMode.TOKEN_CLASSIFICATION,
     model_name="path/to/fio-bert",
 )
 ```
 
 BIO/BIOLU-префиксы вида `B-LAST_NAME`, `I-LAST_NAME`, `U-FIRST_NAME` поддерживаются через HuggingFace aggregation pipeline.
-
-QA-режим оставлен только как экспериментальный fallback:
-
-```python
-from src.sts_fio_mvp import ExtractorMode, extract_fio_from_image
-
-result = extract_fio_from_image(
-    "data/test3.png",
-    extractor_mode=ExtractorMode.QA,
-)
-```
 
 ## GPU
 
