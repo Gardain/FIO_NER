@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from enum import Enum
 from typing import Any
 
 
-DEFAULT_QA_MODEL = "mrm8488/bert-multi-cased-finetuned-xquadv1"
 DEFAULT_NER_MODEL = "Gherman/bert-base-NER-Russian"
+TOKEN_CLASSIFICATION_SOURCE = "token-classification"
 
 
 @dataclass(frozen=True)
@@ -30,32 +29,15 @@ class FioResult:
         }
 
 
-class ExtractorMode(str, Enum):
-    QA = "qa"
-    TOKEN_CLASSIFICATION = "token-classification"
-
-
 def _import_pipeline():
     try:
         from transformers import pipeline  # type: ignore
     except ImportError as exc:
         raise RuntimeError(
-            "Transformers is required for BERT extraction. Install dependencies with: "
+            "Transformers is required for FIO extraction. Install dependencies with: "
             "pip install -r requirements.txt"
         ) from exc
     return pipeline
-
-
-def _import_qa_dependencies():
-    try:
-        import torch  # type: ignore
-        from transformers import AutoModelForQuestionAnswering, AutoTokenizer  # type: ignore
-    except ImportError as exc:
-        raise RuntimeError(
-            "Torch and transformers are required for BERT QA extraction. "
-            "Install dependencies with: pip install -r requirements.txt"
-        ) from exc
-    return torch, AutoModelForQuestionAnswering, AutoTokenizer
 
 
 def _normalize_answer(value: Any) -> str | None:
@@ -66,164 +48,7 @@ def _normalize_answer(value: Any) -> str | None:
     return text or None
 
 
-class BertQaFioExtractor:
-    """Extract FIO fields with a BERT extractive QA model.
-
-    The implementation calls AutoModelForQuestionAnswering directly instead of
-    transformers.pipeline("question-answering"). Some transformers builds do not
-    register that pipeline task, while the underlying BERT QA model still works.
-    """
-
-    QUESTIONS = {
-        "surname": (
-            "\u041a\u0430\u043a\u0430\u044f \u0444\u0430\u043c\u0438\u043b\u0438\u044f "
-            "\u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u0438\u043a\u0430 "
-            "\u0438\u043b\u0438 \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430 "
-            "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0433\u043e "
-            "\u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430?"
-        ),
-        "name": (
-            "\u041a\u0430\u043a\u043e\u0435 \u0438\u043c\u044f "
-            "\u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u0438\u043a\u0430 "
-            "\u0438\u043b\u0438 \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430 "
-            "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0433\u043e "
-            "\u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430?"
-        ),
-        "patronymic": (
-            "\u041a\u0430\u043a\u043e\u0435 \u043e\u0442\u0447\u0435\u0441\u0442\u0432\u043e "
-            "\u0441\u043e\u0431\u0441\u0442\u0432\u0435\u043d\u043d\u0438\u043a\u0430 "
-            "\u0438\u043b\u0438 \u0432\u043b\u0430\u0434\u0435\u043b\u044c\u0446\u0430 "
-            "\u0442\u0440\u0430\u043d\u0441\u043f\u043e\u0440\u0442\u043d\u043e\u0433\u043e "
-            "\u0441\u0440\u0435\u0434\u0441\u0442\u0432\u0430?"
-        ),
-    }
-
-    def __init__(
-        self,
-        model_name: str = DEFAULT_QA_MODEL,
-        device: int = -1,
-        max_answer_len: int = 32,
-        max_length: int = 512,
-        doc_stride: int = 128,
-    ) -> None:
-        torch, auto_model, auto_tokenizer = _import_qa_dependencies()
-        self._torch = torch
-        self._tokenizer = auto_tokenizer.from_pretrained(model_name, use_fast=True)
-        if not getattr(self._tokenizer, "is_fast", False):
-            raise RuntimeError(
-                "QA extraction requires a fast tokenizer to map BERT tokens back "
-                "to OCR text spans."
-            )
-
-        self._model = auto_model.from_pretrained(model_name)
-        self._device = self._resolve_device(torch, device)
-        self._model.to(self._device)
-        self._model.eval()
-
-        self._max_answer_len = max_answer_len
-        self._max_length = max_length
-        self._doc_stride = doc_stride
-
-    @staticmethod
-    def _resolve_device(torch_module, device: int):
-        if device >= 0 and torch_module.cuda.is_available():
-            return torch_module.device(f"cuda:{device}")
-        return torch_module.device("cpu")
-
-    def extract(self, text: str) -> FioResult:
-        fields: dict[str, ExtractedField] = {}
-        for field_name, question in self.QUESTIONS.items():
-            answer, score = self._answer(question=question, context=text)
-            fields[field_name] = ExtractedField(
-                value=answer,
-                confidence=score,
-                source=ExtractorMode.QA.value,
-            )
-        return FioResult(
-            surname=fields["surname"],
-            name=fields["name"],
-            patronymic=fields["patronymic"],
-        )
-
-    def _answer(self, question: str, context: str) -> tuple[str | None, float]:
-        context = context.strip()
-        if not context:
-            return None, 0.0
-
-        encoded = self._tokenizer(
-            question,
-            context,
-            truncation="only_second",
-            max_length=self._max_length,
-            stride=self._doc_stride,
-            return_overflowing_tokens=True,
-            return_offsets_mapping=True,
-            padding="max_length",
-            return_tensors="pt",
-        )
-
-        offset_mapping = encoded.pop("offset_mapping")
-        encoded.pop("overflow_to_sample_mapping", None)
-
-        model_inputs = {
-            name: value.to(self._device)
-            for name, value in encoded.items()
-            if hasattr(value, "to")
-        }
-
-        with self._torch.no_grad():
-            outputs = self._model(**model_inputs)
-
-        start_probs = self._torch.softmax(outputs.start_logits, dim=-1)
-        end_probs = self._torch.softmax(outputs.end_logits, dim=-1)
-
-        best_text: str | None = None
-        best_score = 0.0
-        feature_count = int(start_probs.shape[0])
-
-        for feature_index in range(feature_count):
-            sequence_ids = encoded.sequence_ids(feature_index)
-            context_token_indexes = {
-                index for index, sequence_id in enumerate(sequence_ids) if sequence_id == 1
-            }
-
-            start_top = self._top_indexes(start_probs[feature_index])
-            end_top = self._top_indexes(end_probs[feature_index])
-
-            for start_index in start_top:
-                if start_index not in context_token_indexes:
-                    continue
-                for end_index in end_top:
-                    if end_index not in context_token_indexes:
-                        continue
-                    if end_index < start_index:
-                        continue
-                    if end_index - start_index + 1 > self._max_answer_len:
-                        continue
-
-                    char_start, _ = offset_mapping[feature_index][start_index].tolist()
-                    _, char_end = offset_mapping[feature_index][end_index].tolist()
-                    if char_end <= char_start:
-                        continue
-
-                    score = (
-                        start_probs[feature_index][start_index]
-                        * end_probs[feature_index][end_index]
-                    ).item()
-                    if score <= best_score:
-                        continue
-
-                    best_text = context[char_start:char_end]
-                    best_score = float(score)
-
-        return _normalize_answer(best_text), best_score
-
-    def _top_indexes(self, probabilities, count: int = 20) -> list[int]:
-        count = min(count, int(probabilities.shape[-1]))
-        return self._torch.topk(probabilities, k=count).indices.tolist()
-
-
-class BertTokenClassificationFioExtractor:
+class BertFioExtractor:
     """Extract fields with a fine-tuned token-classification BERT model.
 
     Expected entity labels are SURNAME, NAME and PATRONYMIC. BIO prefixes are
@@ -277,7 +102,7 @@ class BertTokenClassificationFioExtractor:
                 chosen[field] = ExtractedField(
                     value=value,
                     confidence=confidence,
-                    source=ExtractorMode.TOKEN_CLASSIFICATION.value,
+                    source=TOKEN_CLASSIFICATION_SOURCE,
                 )
 
         if person_spans and not all(field in chosen for field in ("surname", "name")):
@@ -286,7 +111,7 @@ class BertTokenClassificationFioExtractor:
         empty = ExtractedField(
             value=None,
             confidence=None,
-            source=ExtractorMode.TOKEN_CLASSIFICATION.value,
+            source=TOKEN_CLASSIFICATION_SOURCE,
         )
         return FioResult(
             surname=chosen.get("surname", empty),
@@ -317,18 +142,15 @@ class BertTokenClassificationFioExtractor:
                 chosen[field] = ExtractedField(
                     value=part,
                     confidence=confidence,
-                    source=ExtractorMode.TOKEN_CLASSIFICATION.value,
+                    source=TOKEN_CLASSIFICATION_SOURCE,
                 )
 
 
 def create_extractor(
-    mode: ExtractorMode,
     model_name: str | None = None,
     device: int = -1,
-) -> BertQaFioExtractor | BertTokenClassificationFioExtractor:
-    if mode == ExtractorMode.QA:
-        return BertQaFioExtractor(model_name=model_name or DEFAULT_QA_MODEL, device=device)
-    return BertTokenClassificationFioExtractor(
+) -> BertFioExtractor:
+    return BertFioExtractor(
         model_name=model_name or DEFAULT_NER_MODEL,
         device=device,
     )
