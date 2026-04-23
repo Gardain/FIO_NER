@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
 
-from .extractor import ExtractorMode, FioResult, create_extractor
+from .extractor import FioResult, create_extractor
 from .ocr import EasyOcrEngine, OcrResult
 from .postprocess import refine_fio_from_ocr
 from .preprocess import ImageVariant, build_owner_crop_variants, build_variants
@@ -41,7 +41,7 @@ def process_image(
             progress=progress,
         )
     if progress:
-        progress("Extracting FIO with BERT NER")
+        progress("Extracting FIO with NER model")
     raw_fio_result: FioResult = extractor.extract(ocr_result.text)
     fio_result = refine_fio_from_ocr(ocr_result, raw_fio_result)
 
@@ -138,7 +138,6 @@ def _select_variants(
 def extract_fio_from_image(
     image_path: str | Path,
     *,
-    extractor_mode: ExtractorMode | str = ExtractorMode.TOKEN_CLASSIFICATION,
     model_name: str | None = None,
     debug_dir: str | Path | None = None,
     use_gpu: bool = False,
@@ -147,7 +146,7 @@ def extract_fio_from_image(
     use_owner_crop: bool = True,
     progress: Callable[[str], None] | None = None,
 ) -> StsExtractionResult:
-    """Run the full OCR + BERT extraction pipeline for one image.
+    """Run the full OCR + NER extraction pipeline for one image.
 
     This is the main API for manual use from Python code:
 
@@ -156,7 +155,6 @@ def extract_fio_from_image(
     """
     image_path = Path(image_path)
     debug_path = Path(debug_dir) if debug_dir is not None else None
-    extractor_mode = ExtractorMode(extractor_mode)
 
     if progress:
         progress("Initializing EasyOCR")
@@ -178,14 +176,13 @@ def extract_fio_from_image(
         )
 
     if progress:
-        progress("Loading BERT NER model")
+        progress("Loading NER model")
     extractor = create_extractor(
-        mode=extractor_mode,
         model_name=model_name,
         device=bert_device,
     )
     if progress:
-        progress("Extracting FIO with BERT NER")
+        progress("Extracting FIO with NER model")
     raw_fio_result: FioResult = extractor.extract(ocr_result.text)
     fio_result = refine_fio_from_ocr(ocr_result, raw_fio_result)
 
